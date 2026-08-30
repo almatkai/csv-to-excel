@@ -1,0 +1,61 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "csv-to-excel",
+  "title": "Convert CSV to Excel",
+  "description": "Convert CSV table to Excel compatible table.",
+  "icon": "command-icon.png",
+  "author": "almatkai",
+  "categories": [
+    "Applications",
+    "Productivity"
+  ],
+  "license": "MIT",
+  "commands": [
+    {
+      "name": "index",
+      "title": "Convert CSV to Excel",
+      "description": "Convert CSV table to Excel compatible table",
+      "mode": "view",
+      "platforms": [
+        "macOS",
+        "Windows"
+      ]
+    }
+  ],
+  "dependencies": {
+    "@aternus/csv-to-xlsx": "^2.0.4",
+    "@raycast/api": "^1.104.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "tsx": "^4.22.4",
+    "typescript": "^5.9.3"
+  },
+  "scripts": {
+    "build": "ray build -e dist",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts"
+  },
+  "id": "com.tezbar.csv-to-excel",
+  "platforms": [
+    "macOS",
+    "Windows"
+  ],
+  "version": "0.1.0",
+  "tezbar": {
+    "schemaVersion": 1,
+    "platforms": [
+      "macos",
+      "windows"
+    ],
+    "linuxStatus": "coming-soon",
+    "repository": "https://github.com/almatkai/csv-to-excel",
+    "upstream": {
+      "repository": "https://github.com/raycast/extensions",
+      "path": "extensions/csv-to-excel",
+      "commit": "6734d85992290066fd31a7f5bee3cca3d3545a1a"
+    }
+  }
+}
