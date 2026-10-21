@@ -3,7 +3,7 @@
   "name": "csv-to-excel",
   "title": "Convert CSV to Excel",
   "description": "Convert CSV table to Excel compatible table.",
-  "icon": "command-icon.png",
+  "icon": "assets/command-icon.png",
   "author": "almatkai",
   "categories": [
     "Applications",
