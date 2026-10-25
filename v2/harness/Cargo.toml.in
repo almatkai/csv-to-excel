@@ -1,0 +1,17 @@
+[package]
+name = "csv-native-v2-contract-harness"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+publish = false
+[lib]
+test = false
+doctest = false
+[dependencies]
+tezbar-csv-to-excel = { path = "../.." }
+serde_json = "=1.0.145"
+tokio = { version = "=1.48.0", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tempfile = "=3.23.0"
+uuid = { version = "=1.18.1", features = ["v4"] }
+base64 = "=0.22.1"
+log = "=0.4.28"

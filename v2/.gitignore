@@ -1,0 +1,9 @@
+/target/
+/validation/
+/.checks/
+/package-output/
+# Root V1 ignores dist and node_modules; pinned executable oracle fixtures are deliberate.
+!fixtures/**/node_modules/
+!fixtures/**/node_modules/**
+!fixtures/**/dist/
+!fixtures/**/dist/**

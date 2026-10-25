@@ -1,0 +1,19 @@
+[package]
+name = "tezbar-csv-to-excel"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT AND Apache-2.0 AND ISC AND BSD-3-Clause AND Unicode-DFS-2016"
+repository = "https://github.com/almatkai/csv-to-excel"
+readme = "README.md"
+description = "Offline Native V2 CSV to XLSX engine for Tezbar"
+include = ["/src/**", "/tests/**", "/examples/**", "/adapter.rs", "/harness/**", "/fixtures/**", "/scripts/**", "/Cargo.toml", "/Cargo.lock", "/README.md", "/INTEGRATION.md", "/VALIDATION.md", "/NOTICE.md", "/manifest.json", "/provenance.json", "/original-icon.png", "/.gitignore", "/licenses/**"]
+
+[dependencies]
+
+[dev-dependencies]
+serde_json = "=1.0.145"
+
+[[example]]
+name = "oracle-driver"
+path = "examples/oracle_driver.rs"

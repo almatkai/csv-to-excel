@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 2,
+  "id": "com.tezbar.native.csv-to-excel",
+  "slug": "csv-to-excel",
+  "name": "Convert CSV to Excel",
+  "version": "0.1.0",
+  "description": "Convert CSV table to Excel compatible table. Original extension by VictoRD11; native port of the almatkai source.",
+  "icon": "/extensions/icons/csv-to-excel.png",
+  "runtime": "rust",
+  "replaces": ["raycast.csv-to-excel"],
+  "platforms": ["macOS", "Windows"],
+  "preferences": [],
+  "commands": [{
+    "name": "index",
+    "title": "Convert CSV to Excel",
+    "description": "Convert CSV table to Excel compatible table",
+    "mode": "view",
+    "runtime": "rust",
+    "platforms": ["macOS", "Windows"],
+    "preferences": [],
+    "argumentDefinitions": []
+  }],
+  "verification": [
+    {"platform": "macOS", "state": "not-run", "note": "Headless contracts only; host registration/rebuild and real UI, picker and Excel QA pending."},
+    {"platform": "Windows", "state": "not-run", "note": "GNU compile/Clippy only; host registration/rebuild and real UI, picker and Excel QA pending."}
+  ]
+}
