@@ -1,0 +1,74 @@
+{
+  "sourceRepository": "https://github.com/almatkai/csv-to-excel",
+  "sourceSha": "718b9ca0b42e00be968491064310ac6e5bc76a93",
+  "base": "fresh origin/main",
+  "branch": "feat/native-v2-rust",
+  "original": {
+    "repository": "https://github.com/raycast/extensions",
+    "sha": "6734d85992290066fd31a7f5bee3cca3d3545a1a",
+    "path": "extensions/csv-to-excel",
+    "author": "VictoRD11",
+    "listedContributors": [],
+    "icon": {
+      "url": "https://raw.githubusercontent.com/raycast/extensions/6734d85992290066fd31a7f5bee3cca3d3545a1a/extensions/csv-to-excel/assets/command-icon.png",
+      "bytes": 26498,
+      "sha256": "7e091606ff926192548547eae0bd3743928929c3cb01124c2355cfc4ed1df0e7"
+    },
+    "extensionLicense": "HTTP 404; repository MIT text retained"
+  },
+  "beta": {
+    "sha": "fd300e276356587726566026f072563eb9c34cb1",
+    "access": "read-only git show; no host worktree copies",
+    "manifestFixtureSuffix": ".fixture (raw bytes unchanged, avoids nested Cargo package omission)"
+  },
+  "libraries": {
+    "@aternus/csv-to-xlsx": {
+      "version": "2.1.5",
+      "resolved": "https://registry.npmjs.org/@aternus/csv-to-xlsx/-/csv-to-xlsx-2.1.5.tgz",
+      "integrity": "sha512-WEAcLN6KbHw+1hqQ/9wdNEMf1KXTaU/VM0gm4J9e8nbr4lq/MtIdgHwx+gYHkp7W2/uC4tw02ZUf6q4DxI+s0g==",
+      "license": "MIT"
+    },
+    "csv-parse": {
+      "version": "5.4.0",
+      "license": "MIT"
+    },
+    "fs-extra": {
+      "version": "11.1.1",
+      "license": "MIT"
+    },
+    "graceful-fs": {
+      "version": "4.2.11",
+      "license": "ISC"
+    },
+    "jsonfile": {
+      "version": "6.1.0",
+      "license": "MIT"
+    },
+    "universalify": {
+      "version": "2.0.0",
+      "license": "MIT"
+    },
+    "xlsx": {
+      "version": "0.20.1",
+      "resolved": "https://cdn.sheetjs.com/xlsx-0.20.1/xlsx-0.20.1.tgz",
+      "integrity": "sha512-hA7SYmn/H3cJ1VGi7kmSKxbEXCEn5UVJlwYFSFXhLe54wPUvW+80TmR5l+TZh4nJCw8G/e0SuZUfvqlTIh40hw==",
+      "license": "Apache-2.0"
+    }
+  },
+  "fixtureHashes": "fixtures/hashes.json",
+  "licenseInventory": "licenses/inventory.json",
+  "aggregateSpdx": "MIT AND Apache-2.0 AND ISC AND BSD-3-Clause AND Unicode-DFS-2016",
+  "search": {
+    "prefix": "ax-35f8c1cf566a",
+    "initialSourceFilesIndexed": 3,
+    "initialRecords": 51,
+    "initialExit": 3,
+    "note": "completed-with-junk; two skipped non-source files, exact reads/rg used for exhaustive checks",
+    "finalRefresh": {
+      "exit": 1,
+      "complete": false,
+      "reason": "project retained file README.md: detected family changed from txt-lines to txt-prose",
+      "policy": "No service restart or schema change; new V2 index incomplete, exact reads/rg and immutable hashes used."
+    }
+  }
+}

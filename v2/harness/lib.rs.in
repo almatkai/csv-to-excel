@@ -1,0 +1,138 @@
+// Headless Tauri, installation and registration boundaries only. Pinned common,
+// SDK and NativeSessions files are copied byte-for-byte and compiled unmodified.
+#![allow(dead_code)]
+extern crate self as tauri;
+extern crate self as tauri_plugin_dialog;
+// Native dialog STUB: configurable local path, immediate callback; never opens OS UI.
+pub static DIALOG_RESPONSE: std::sync::Mutex<Option<std::path::PathBuf>> =
+    std::sync::Mutex::new(None);
+pub trait DialogExt {
+    fn dialog(&self) -> Dialog;
+}
+pub struct Dialog;
+pub struct FilePath(std::path::PathBuf);
+impl FilePath {
+    pub fn into_path(self) -> Result<std::path::PathBuf, String> {
+        Ok(self.0)
+    }
+}
+impl DialogExt for AppHandle {
+    fn dialog(&self) -> Dialog {
+        Dialog
+    }
+}
+impl Dialog {
+    pub fn file(&self) -> Self {
+        Dialog
+    }
+    pub fn add_filter(self, name: impl Into<String>, extensions: &[&str]) -> Self {
+        assert_eq!(name.into(), "CSV File");
+        assert_eq!(extensions, &["csv"]);
+        self
+    }
+    pub fn pick_file<F: FnOnce(Option<FilePath>) + Send + 'static>(self, f: F) {
+        f(DIALOG_RESPONSE.lock().unwrap().take().map(FilePath));
+    }
+}
+
+#[derive(Clone)]
+pub struct AppHandle;
+pub trait Emitter {
+    fn emit(&self, channel: &str, payload: serde_json::Value) -> Result<(), String>;
+}
+impl Emitter for AppHandle {
+    fn emit(&self, _: &str, _: serde_json::Value) -> Result<(), String> {
+        panic!("Desktop events are forbidden in this harness")
+    }
+}
+pub mod native_core {
+    pub mod common;
+    pub mod extensions {
+        #[cfg(not(test))]
+        mod native;
+        pub mod v2_csv_to_excel;
+        pub mod v2_sdk;
+        // REGISTRATION STUB: exercises new adapter with the unchanged NativeSessions.
+        mod v2_runtime {
+            use super::super::common::{CoreContext, CoreResult};
+            use serde_json::Value;
+            pub fn slug(id: &str) -> Option<&str> {
+                let slug = id
+                    .strip_prefix("com.tezbar.native.")
+                    .or_else(|| id.strip_prefix("raycast."))
+                    .unwrap_or(id);
+                (slug == "csv-to-excel").then_some(slug)
+            }
+            pub fn supports(id: &str, command: &str) -> bool {
+                slug(id).is_some() && super::v2_csv_to_excel::commands().contains(&command)
+            }
+            pub async fn handle(
+                ctx: &CoreContext,
+                slug: &str,
+                command: &str,
+                operation: &str,
+                payload: &Value,
+                state: &mut Value,
+            ) -> CoreResult {
+                if slug != "csv-to-excel" {
+                    return Err("Unknown extension".into());
+                }
+                super::v2_csv_to_excel::handle(ctx, command, operation, payload, state).await
+            }
+        }
+        // INSTALLATION STUB: temp ConfigStore models availability; no managed host profile.
+        mod registry {
+            use super::super::common::CoreContext;
+            use serde_json::{json, Value};
+            pub struct Installed(Value);
+            pub fn installed_command(
+                ctx: &CoreContext,
+                id: &str,
+                command: &str,
+            ) -> Option<Installed> {
+                let config = ctx.config.read().ok()?;
+                (super::v2_runtime::supports(id, command) && config["installed"] != false).then(
+                    || {
+                        Installed(
+                            config["preferences"]
+                                .as_object()
+                                .map(|o| Value::Object(o.clone()))
+                                .unwrap_or_else(|| json!({})),
+                        )
+                    },
+                )
+            }
+            pub fn preferences(v: &Installed, _: Option<&str>) -> Result<Value, String> {
+                Ok(v.0.clone())
+            }
+        }
+        #[cfg(not(test))]
+        #[derive(Clone, Default)]
+        pub struct Sessions {
+            inner: native::NativeSessions,
+            files: std::sync::Arc<std::sync::Mutex<()>>,
+        }
+        #[cfg(not(test))]
+        impl Sessions {
+            pub async fn call(
+                &self,
+                ctx: &super::common::CoreContext,
+                channel: &str,
+                body: serde_json::Value,
+            ) -> super::common::CoreResult {
+                self.inner
+                    .handle(ctx, &self.files, channel, &[body])
+                    .await
+                    .unwrap_or_else(|| {
+                        Err("Worker fallback (not implemented by headless harness)".into())
+                    })
+            }
+            pub async fn clear(&self) {
+                self.inner.clear().await;
+            }
+            pub async fn clear_slug(&self) {
+                self.inner.clear_slug("csv-to-excel").await;
+            }
+        }
+    }
+}

@@ -1,0 +1,735 @@
+use adapter::{FilePort, NativeFiles};
+use csv_native_v2_contract_harness::native_core::{
+    common::{CoreContext, CorePaths},
+    extensions::{v2_csv_to_excel as adapter, v2_sdk as sdk, Sessions},
+};
+use serde_json::{json, Value};
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+};
+fn ctx(dir: &Path) -> CoreContext {
+    CoreContext::new(
+        CorePaths {
+            data_dir: dir.join("data"),
+            config_dir: dir.join("config"),
+            temp_dir: dir.join("tmp"),
+            resource_dir: dir.join("resources"),
+            home_dir: dir.into(),
+        },
+        None,
+    )
+}
+#[derive(Default)]
+struct Files {
+    bytes: Vec<u8>,
+    writes: Vec<(PathBuf, Vec<u8>)>,
+    existing: Vec<PathBuf>,
+    ack: Option<Result<Value, String>>,
+    reads: usize,
+    regular: bool,
+}
+impl FilePort for Files {
+    fn exists(&mut self, p: &Path) -> Result<bool, String> {
+        Ok(p == Path::new("/test/source.csv") || self.existing.contains(&p.to_owned()))
+    }
+    fn is_file(&mut self, _: &Path) -> Result<bool, String> {
+        Ok(self.regular)
+    }
+    fn read(&mut self, _: &Path) -> Result<Vec<u8>, String> {
+        self.reads += 1;
+        Ok(self.bytes.clone())
+    }
+    fn suffix(&mut self) -> u16 {
+        500
+    }
+    fn publish(&mut self, p: &Path, b: &[u8]) -> Result<Value, String> {
+        self.writes.push((p.into(), b.into()));
+        self.ack.clone().unwrap_or(Ok(json!({"ok":true})))
+    }
+}
+fn files() -> Files {
+    Files {
+        bytes: b"a,b\n1,=A1".to_vec(),
+        regular: true,
+        ..Default::default()
+    }
+}
+fn launch(f: &mut Files, s: &mut Value) -> Value {
+    adapter::handle_with(f, "index", "extension:run-command", &json!({}), s).unwrap()
+}
+fn invoke(f: &mut Files, s: &mut Value, id: &Value, values: Value) -> Result<Value, String> {
+    adapter::handle_with(
+        f,
+        "index",
+        "extension:invoke-action",
+        &json!({"actionId":id,"formValues":values}),
+        s,
+    )
+}
+#[test]
+fn strict_acknowledgements() {
+    for v in [
+        json!(null),
+        json!(true),
+        json!(false),
+        json!({}),
+        json!({"ok":false}),
+        json!({"ok":true,"success":false}),
+        json!({"ok":true,"success":null}),
+        json!({"ok":true,"error":""}),
+        json!({"ok":true,"error":false}),
+        json!({"ok":"true"}),
+        json!([]),
+    ] {
+        assert!(adapter::require_ack(Ok(v)).is_err());
+    }
+    for v in [
+        json!({"ok":true}),
+        json!({"ok":true,"error":null}),
+        json!({"ok":true,"success":true}),
+        json!({"ok":true,"success":true,"error":null}),
+    ] {
+        assert!(adapter::require_ack(Ok(v)).is_ok());
+    }
+    assert!(!adapter::require_ack(Err("secret\nraw debug".into()))
+        .unwrap_err()
+        .contains("secret"));
+}
+#[test]
+fn malformed_forged_cross_session_and_stale_capabilities() {
+    let mut f = files();
+    let mut s = json!({});
+    let view = launch(&mut f, &mut s);
+    let id = view["actions"][0]["id"].clone();
+    for values in [
+        json!(null),
+        json!([]),
+        json!({}),
+        json!({"files":"/test/source.csv"}),
+        json!({"files":[1]}),
+        json!({"files":["a\u{0000}.csv"]}),
+    ] {
+        let before = s.clone();
+        assert!(invoke(&mut f, &mut s, &id, values).is_err());
+        assert_eq!(s, before);
+    }
+    let mut other = json!({});
+    launch(&mut f, &mut other);
+    assert!(invoke(
+        &mut f,
+        &mut other,
+        &id,
+        json!({"files":["/test/source.csv"]})
+    )
+    .is_err());
+    assert!(invoke(
+        &mut f,
+        &mut s,
+        &json!("convert"),
+        json!({"files":["/test/source.csv"]})
+    )
+    .is_err());
+    let result = invoke(
+        &mut f,
+        &mut s,
+        &id,
+        json!({"files":["/test/source.csv"],"output":"forged"}),
+    )
+    .unwrap();
+    assert_eq!(result["root"]["type"], "Detail");
+    assert_eq!(f.writes.len(), 1);
+    assert_eq!(
+        f.writes[0].1,
+        tezbar_csv_to_excel::convert(&f.bytes).unwrap()
+    );
+    assert!(invoke(&mut f, &mut s, &id, json!({"files":["/test/source.csv"]})).is_err());
+    assert_eq!(f.writes.len(), 1);
+}
+#[test]
+fn bound_output_checkpoint_deliberate_retry_and_back_draft() {
+    let mut f = files();
+    f.ack = Some(Ok(Value::Null));
+    let mut s = json!({});
+    let v = launch(&mut f, &mut s);
+    let v = invoke(
+        &mut f,
+        &mut s,
+        &v["actions"][0]["id"],
+        json!({"files":["/test/source.csv"]}),
+    )
+    .unwrap();
+    assert!(s["pending"].is_object());
+    assert!(s["completed"].is_null());
+    let bytes = f.writes[0].1.clone();
+    let retry = v["actions"][0]["id"].clone();
+    let before = s.clone();
+    assert!(invoke(&mut f, &mut s, &retry, json!([])).is_err());
+    assert_eq!(s, before);
+    f.bytes = b"changed".to_vec();
+    f.ack = None;
+    let success = invoke(
+        &mut f,
+        &mut s,
+        &retry,
+        json!({"output":"malicious","files":["/evil.csv"]}),
+    )
+    .unwrap();
+    assert_eq!(f.reads, 1);
+    assert_eq!(f.writes[1].1, bytes);
+    assert!(s["pending"].is_null());
+    assert!(s["completed"].is_object());
+    assert!(invoke(&mut f, &mut s, &retry, json!({})).is_err());
+    let back = success["root"]["props"]["backActionId"].clone();
+    let before = s.clone();
+    assert!(invoke(&mut f, &mut s, &back, json!([])).is_err());
+    assert_eq!(s, before);
+    let view = invoke(&mut f, &mut s, &back, Value::Null).unwrap();
+    assert_eq!(
+        view["root"]["children"][0]["props"]["value"],
+        json!(["/test/source.csv"])
+    );
+    assert!(view["root"]["children"][0]["props"]
+        .get("actionId")
+        .is_none());
+    assert!(invoke(&mut f, &mut s, &back, Value::Null).is_err());
+}
+#[test]
+fn failed_ack_matrix_retains_same_computed_bytes_and_never_retries_automatically() {
+    for ack in [
+        Ok(json!(false)),
+        Ok(json!({"ok":true,"error":"failed"})),
+        Ok(json!({"ok":true,"success":false})),
+        Err("raw secret".into()),
+    ] {
+        let mut f = files();
+        f.ack = Some(ack);
+        let mut s = json!({});
+        let v = launch(&mut f, &mut s);
+        let v = invoke(
+            &mut f,
+            &mut s,
+            &v["actions"][0]["id"],
+            json!({"files":["/test/source.csv"]}),
+        )
+        .unwrap();
+        assert!(s["pending"].is_object());
+        assert!(!v.to_string().contains("raw secret"));
+        for op in [
+            "extension:refresh-session",
+            "extension:search-text-changed",
+            "extension:load-more",
+        ] {
+            let before = s.clone();
+            assert_eq!(
+                adapter::handle_with(&mut f, "index", op, &json!({}), &mut s).unwrap()["mode"],
+                "unchanged"
+            );
+            assert_eq!(s, before);
+        }
+        assert_eq!(f.writes.len(), 1);
+    }
+}
+#[test]
+fn validation_and_single_collision_match_source() {
+    for (input, error) in [
+        (json!([]), "You need choose a CSV file"),
+        (json!(["file.CSV"]), "File extension is not CSV"),
+        (json!(["/missing.csv"]), "File not found"),
+    ] {
+        let mut f = files();
+        let mut s = json!({});
+        let v = launch(&mut f, &mut s);
+        let v = invoke(
+            &mut f,
+            &mut s,
+            &v["actions"][0]["id"],
+            json!({"files":input}),
+        )
+        .unwrap();
+        assert!(v.to_string().contains(error));
+        assert!(f.writes.is_empty());
+    }
+    let mut f = files();
+    f.existing.push("/test/source.xlsx".into());
+    let mut s = json!({});
+    let v = launch(&mut f, &mut s);
+    invoke(
+        &mut f,
+        &mut s,
+        &v["actions"][0]["id"],
+        json!({"files":["/test/source.csv","ignored.csv"]}),
+    )
+    .unwrap();
+    assert_eq!(f.writes[0].0, Path::new("/test/source_500.xlsx"));
+    let mut f = files();
+    f.existing = vec!["/test/source.xlsx".into(), "/test/source_500.xlsx".into()];
+    let v = launch(&mut f, &mut s);
+    let v = invoke(
+        &mut f,
+        &mut s,
+        &v["actions"][0]["id"],
+        json!({"files":["/test/source.csv"]}),
+    )
+    .unwrap();
+    assert!(v.to_string().contains("already exists"));
+    assert_eq!(f.reads, 0);
+}
+#[test]
+fn discarded_search_clone_and_refresh_never_issue_new_ids() {
+    let mut f = files();
+    let mut s = json!({});
+    launch(&mut f, &mut s);
+    let original = s.clone();
+    let mut staged = s.clone();
+    adapter::handle_with(
+        &mut f,
+        "index",
+        "extension:search-text-changed",
+        &json!({"searchText":"x"}),
+        &mut staged,
+    )
+    .unwrap();
+    assert_eq!(original, staged);
+    adapter::handle_with(
+        &mut f,
+        "index",
+        "extension:refresh-session",
+        &json!({}),
+        &mut staged,
+    )
+    .unwrap();
+    assert_eq!(original, staged);
+    let discarded = launch(&mut f, &mut staged);
+    let fresh = launch(&mut f, &mut s);
+    assert_ne!(discarded["actions"][0]["id"], fresh["actions"][0]["id"]);
+    assert!(invoke(
+        &mut f,
+        &mut s,
+        &discarded["actions"][0]["id"],
+        json!({"files":["/test/source.csv"]})
+    )
+    .is_err());
+    adapter::handle_with(
+        &mut f,
+        "index",
+        "extension:dispose-session",
+        &json!({}),
+        &mut s,
+    )
+    .unwrap();
+    assert!(invoke(
+        &mut f,
+        &mut s,
+        &fresh["actions"][0]["id"],
+        json!({"files":[]})
+    )
+    .is_err());
+}
+#[test]
+fn native_file_publication_only_in_disposable_directory() {
+    let d = tempfile::tempdir().unwrap();
+    let mut p = NativeFiles;
+    let file = d.path().join("exact.xlsx");
+    let bytes = tezbar_csv_to_excel::convert(b"a\nx").unwrap();
+    adapter::require_ack(p.publish(&file, &bytes)).unwrap();
+    assert_eq!(std::fs::read(&file).unwrap(), bytes);
+    assert!(p.publish(&file, b"clobber").is_err());
+    assert_eq!(std::fs::read(&file).unwrap(), bytes);
+    let input = d.path().join("input.csv");
+    std::fs::write(&input, b"a\nx").unwrap();
+    assert!(p.is_file(&input).unwrap());
+    assert_eq!(p.read(&input).unwrap(), b"a\nx");
+    #[cfg(unix)]
+    {
+        let link = d.path().join("link.csv");
+        std::os::unix::fs::symlink(&input, &link).unwrap();
+        assert!(!p.is_file(&link).unwrap());
+    }
+    for _ in 0..1000 {
+        assert!((1..1000).contains(&p.suffix()));
+    }
+}
+#[tokio::test]
+async fn actual_native_sessions_registration_lifecycle_and_no_router_effects() {
+    let d = tempfile::tempdir().unwrap();
+    let c = ctx(d.path());
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let record = calls.clone();
+    c.set_router(Arc::new(move |channel, args| {
+        record.lock().unwrap().push((channel, args));
+        Box::pin(async { panic!("No desktop effects expected") })
+    }))
+    .unwrap();
+    let sessions = Sessions::default();
+    let v=sessions.call(&c,"extension:run-command",json!({"extensionId":adapter::ID,"commandName":"index","argumentValues":{"ignored":"x"}})).await.unwrap();
+    let id = v["sessionId"].clone();
+    assert!(id.as_str().unwrap().starts_with("native-extension:"));
+    assert_eq!(v["extensionId"], adapter::ID);
+    assert_eq!(v["commandName"], "index");
+    for channel in [
+        "extension:refresh-session",
+        "extension:search-text-changed",
+        "extension:load-more",
+    ] {
+        assert_eq!(
+            sessions
+                .call(&c, channel, json!({"sessionId":id,"searchText":"ignored"}))
+                .await
+                .unwrap()["mode"],
+            "unchanged"
+        );
+    }
+    let bad = sessions
+        .call(
+            &c,
+            "extension:invoke-action",
+            json!({"sessionId":id,"actionId":v["actions"][0]["id"],"formValues":null}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bad["ok"], false);
+    let result = sessions
+        .call(
+            &c,
+            "extension:invoke-action",
+            json!({"sessionId":id,"actionId":v["actions"][0]["id"],"formValues":{"files":[]}}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result["ok"], true);
+    assert_eq!(result["sessionId"], id);
+    assert_eq!(
+        sessions
+            .call(&c, "extension:dispose-session", json!({"sessionId":id}))
+            .await
+            .unwrap(),
+        true
+    );
+    assert_eq!(
+        sessions
+            .call(
+                &c,
+                "extension:invoke-action",
+                json!({"sessionId":id,"actionId":"forged"})
+            )
+            .await
+            .unwrap()["ok"],
+        false
+    );
+    assert_eq!(
+        sessions
+            .call(
+                &c,
+                "extension:run-command",
+                json!({"sessionId":id,"extensionId":adapter::ID,"commandName":"index"})
+            )
+            .await
+            .unwrap()["ok"],
+        false
+    );
+    assert!(calls.lock().unwrap().is_empty());
+    let v = sessions
+        .call(
+            &c,
+            "extension:run-command",
+            json!({"extensionId":"raycast.csv-to-excel","commandName":"index"}),
+        )
+        .await
+        .unwrap();
+    c.config.patch(&json!({"installed":false})).unwrap();
+    assert_eq!(sessions.call(&c,"extension:invoke-action",json!({"sessionId":v["sessionId"],"actionId":v["actions"][0]["id"],"formValues":{"files":[]}})).await.unwrap()["ok"],false);
+    sessions.clear().await;
+    sessions.clear_slug().await;
+}
+#[tokio::test]
+async fn actual_native_sessions_file_output_and_uninstall() {
+    let d = tempfile::tempdir().unwrap();
+    let c = ctx(d.path());
+    let input = d.path().join("source.csv");
+    std::fs::write(&input, b"a,b\n1,2").unwrap();
+    let sessions = Sessions::default();
+    let v = sessions
+        .call(
+            &c,
+            "extension:run-command",
+            json!({"extensionId":adapter::ID,"commandName":"index"}),
+        )
+        .await
+        .unwrap();
+    let result=sessions.call(&c,"extension:invoke-action",json!({"sessionId":v["sessionId"],"actionId":v["actions"][0]["id"],"formValues":{"files":[input]}})).await.unwrap();
+    assert_eq!(result["root"]["type"], "Detail");
+    let output = input.with_extension("xlsx");
+    let bytes = std::fs::read(&output).unwrap();
+    assert_eq!(bytes, tezbar_csv_to_excel::convert(b"a,b\n1,2").unwrap());
+    let again=sessions.call(&c,"extension:invoke-action",json!({"sessionId":v["sessionId"],"actionId":v["actions"][0]["id"],"formValues":{"files":[input]}})).await.unwrap();
+    assert_eq!(again["ok"], false);
+    assert_eq!(
+        std::fs::read_dir(d.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.path().extension().is_some_and(|x| x == "xlsx"))
+            .count(),
+        1
+    );
+    sessions.clear_slug().await;
+    assert_eq!(
+        sessions
+            .call(
+                &c,
+                "extension:refresh-session",
+                json!({"sessionId":v["sessionId"]})
+            )
+            .await
+            .unwrap()["ok"],
+        false
+    );
+}
+#[tokio::test]
+async fn actual_sdk_storage_corruption_unknown_keys_and_atomic_updates() {
+    // Source has no storage; these checks verify the linked SDK contract only.
+    let d = tempfile::tempdir().unwrap();
+    let c = ctx(d.path());
+    sdk::update_store(&c, "contract", |v| {
+        *v = json!({"unknown":{"keep":true},"count":0});
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let mut tasks = Vec::new();
+    for _ in 0..12 {
+        let c = c.clone();
+        tasks.push(tokio::spawn(async move {
+            sdk::update_store(&c, "contract", |v| {
+                let n = v["count"].as_u64().ok_or("Typed corruption")?;
+                v["count"] = json!(n + 1);
+                Ok(())
+            })
+            .await
+        }));
+    }
+    for t in tasks {
+        t.await.unwrap().unwrap();
+    }
+    let value = sdk::read_store(&c, "contract").await.unwrap();
+    assert_eq!(value["count"], 12);
+    assert_eq!(value["unknown"]["keep"], true);
+    let p = c
+        .paths
+        .data_dir
+        .join("native-extensions-v2/contract/storage.json");
+    std::fs::write(&p, b"{broken").unwrap();
+    assert!(sdk::update_store(&c, "contract", |_| Ok(())).await.is_err());
+    assert_eq!(std::fs::read(&p).unwrap(), b"{broken");
+    std::fs::write(&p, b"{\"count\":\"corrupt\",\"unknown\":1}").unwrap();
+    assert!(sdk::update_store(&c, "contract", |v| {
+        let n = v["count"].as_u64().ok_or("Typed corruption")?;
+        v["count"] = json!(n + 1);
+        Ok(())
+    })
+    .await
+    .is_err());
+    assert_eq!(
+        std::fs::read(&p).unwrap(),
+        b"{\"count\":\"corrupt\",\"unknown\":1}"
+    );
+}
+#[tokio::test]
+async fn native_dialog_bridge_stub_cancel_path_and_headless_error() {
+    use csv_native_v2_contract_harness::{AppHandle, DIALOG_RESPONSE};
+    let d = tempfile::tempdir().unwrap();
+    let mut c = ctx(d.path());
+    let mut state = json!({});
+    let launch = adapter::handle(&c, "index", "extension:run-command", &json!({}), &mut state)
+        .await
+        .unwrap();
+    let choose = launch["actions"][1]["id"].clone();
+    let error = adapter::handle(
+        &c,
+        "index",
+        "extension:invoke-action",
+        &json!({"actionId":choose}),
+        &mut state,
+    )
+    .await
+    .unwrap();
+    assert!(error.to_string().contains("requires a desktop session"));
+    c.app = Some(AppHandle);
+    let cap = error["actions"][1]["id"].clone();
+    *DIALOG_RESPONSE.lock().unwrap() = Some(d.path().join("日本.csv"));
+    let result = adapter::handle(
+        &c,
+        "index",
+        "extension:invoke-action",
+        &json!({"actionId":cap}),
+        &mut state,
+    )
+    .await
+    .unwrap();
+    assert_eq!(state["draft"], json!([d.path().join("日本.csv")]));
+    let before = state["draft"].clone();
+    let cancelled = adapter::handle(
+        &c,
+        "index",
+        "extension:invoke-action",
+        &json!({"actionId":result["actions"][1]["id"]}),
+        &mut state,
+    )
+    .await
+    .unwrap();
+    assert_eq!(state["draft"], before);
+    assert_eq!(cancelled["root"]["type"], "Form");
+    assert!(adapter::handle(
+        &c,
+        "index",
+        "extension:invoke-action",
+        &json!({"actionId":cap}),
+        &mut state
+    )
+    .await
+    .is_err());
+}
+#[test]
+fn actual_adapter_wire_artifact_for_renderer_contracts() {
+    let mut f = files();
+    let mut s = json!({});
+    let initial = launch(&mut f, &mut s);
+    let error = invoke(
+        &mut f,
+        &mut s,
+        &initial["actions"][0]["id"],
+        json!({"files":["/test/source.CSV"]}),
+    )
+    .unwrap();
+    let done = invoke(
+        &mut f,
+        &mut s,
+        &error["actions"][0]["id"],
+        json!({"files":["/test/source.csv"]}),
+    )
+    .unwrap();
+    let back = invoke(
+        &mut f,
+        &mut s,
+        &done["root"]["props"]["backActionId"],
+        Value::Null,
+    )
+    .unwrap();
+    let out = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("adapter-wire.json");
+    std::fs::write(
+        out,
+        serde_json::to_vec_pretty(
+            &json!({"initial":initial,"error":error,"done":done,"back":back}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+}
+#[tokio::test]
+async fn actual_native_sessions_capacity_cross_session_and_clear() {
+    let d = tempfile::tempdir().unwrap();
+    let c = ctx(d.path());
+    let sessions = Sessions::default();
+    let mut views = Vec::new();
+    for _ in 0..128 {
+        views.push(
+            sessions
+                .call(
+                    &c,
+                    "extension:run-command",
+                    json!({"extensionId":adapter::ID,"commandName":"index"}),
+                )
+                .await
+                .unwrap(),
+        );
+    }
+    let full = sessions
+        .call(
+            &c,
+            "extension:run-command",
+            json!({"extensionId":adapter::ID,"commandName":"index"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(full["ok"], false);
+    assert!(full.to_string().contains("Too many"));
+    let forged=sessions.call(&c,"extension:invoke-action",json!({"sessionId":views[0]["sessionId"],"actionId":views[1]["actions"][0]["id"],"formValues":{"files":[]}})).await.unwrap();
+    assert_eq!(forged["ok"], false);
+    let valid=sessions.call(&c,"extension:invoke-action",json!({"sessionId":views[0]["sessionId"],"actionId":views[0]["actions"][0]["id"],"formValues":{"files":[]}})).await.unwrap();
+    assert_eq!(valid["ok"], true);
+    sessions.clear().await;
+    for v in views {
+        assert_eq!(
+            sessions
+                .call(
+                    &c,
+                    "extension:refresh-session",
+                    json!({"sessionId":v["sessionId"]})
+                )
+                .await
+                .unwrap()["ok"],
+            false
+        );
+    }
+}
+#[tokio::test]
+async fn form_capabilities_never_revive_and_unrelated_replies_omit_values() {
+    let d = tempfile::tempdir().unwrap();
+    let c = ctx(d.path());
+    let mut f = files();
+    let mut state = json!({});
+    let initial = launch(&mut f, &mut state);
+    let done = invoke(
+        &mut f,
+        &mut state,
+        &initial["actions"][0]["id"],
+        json!({"files":["/test/source.csv"]}),
+    )
+    .unwrap();
+    let back = invoke(
+        &mut f,
+        &mut state,
+        &done["root"]["props"]["backActionId"],
+        Value::Null,
+    )
+    .unwrap();
+    for action in initial["actions"].as_array().unwrap() {
+        let before = state.clone();
+        assert!(adapter::handle(
+            &c,
+            "index",
+            "extension:invoke-action",
+            &json!({"actionId":action["id"],"formValues":{"files":["/test/source.csv"]}}),
+            &mut state
+        )
+        .await
+        .is_err());
+        assert_eq!(state, before);
+    }
+    let error = invoke(
+        &mut f,
+        &mut state,
+        &back["actions"][0]["id"],
+        json!({"files":["/test/source.CSV"]}),
+    )
+    .unwrap();
+    assert!(error["root"]["children"][0]["props"].get("value").is_none());
+    assert!(adapter::handle(
+        &c,
+        "index",
+        "extension:invoke-action",
+        &json!({"actionId":back["actions"][1]["id"]}),
+        &mut state
+    )
+    .await
+    .is_err());
+    let submit = error["actions"][0]["id"].clone();
+    let before = state.clone();
+    assert!(invoke(&mut f, &mut state, &submit, json!([])).is_err());
+    assert_eq!(state, before);
+    let valid = invoke(&mut f, &mut state, &submit, json!({"files":[]})).unwrap();
+    assert_eq!(valid["ok"], true);
+}
